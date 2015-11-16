@@ -28,7 +28,6 @@ function newEvent(type, version, hash){
 }
 
 var RC4Key= "";
-var isv06 = process.version.match('v0.6.*')
 
 function setRC4Key(key){
    RC4Key = key;
@@ -63,7 +62,7 @@ exports.encodeChunkTcpChunkEvent = function(ev){
    //var tmp = buffer.raw.slice(0, buffer.writeIdx);
    var header = buffer.raw.slice(0, buffer.writeIdx);
    var len = header.length + ev.content.length;
-   var tmp = concatBuffers([header, ev.content],len);
+   var tmp = Buffer.concat([header, ev.content],len);
    return encodeEncryptChunk(tmp, ev.hash);
 }
 
@@ -82,7 +81,7 @@ exports.encodeChunkResponseEvent = function(ev){
     writeUvarint(buffer, ev.content.length);
    var header = buffer.raw.slice(0, buffer.writeIdx);
    var len = header.length + ev.content.length;
-   var tmp = concatBuffers([header, ev.content],len);
+   var tmp = Buffer.concat([header, ev.content],len);
    return encodeEncryptChunk(tmp, ev.hash);
 }
 
@@ -128,7 +127,7 @@ function encodeEncryptChunk(data, hash){
   var header =  buffer.raw.slice(0, buffer.writeIdx);
   var len = header.length + data.length;
   //console.log("#########chunk len is " + (buffer.writeIdx - 4) + ", buffer lenth=" + tmp.length);
-  return concatBuffers([header, data], len);
+  return Buffer.concat([header, data], len);
 }
 
 function writeUvarint(data, n) {
@@ -329,25 +328,5 @@ exports.decodeEvents = function(data){
      evs.push(ev);
   }
   return evs;
-}
-
-exports.concatBuffers = concatBuffers;
-
-function concatBuffers(bufs, tlen){
-  if(isv06 != null){
-     var alllen = 0;
-     for(var i = 0; i < bufs.length; i++){
-        alllen = alllen + bufs[i].length;
-     }
-     var newbuf = new Buffer(alllen);
-     var offset = 0;
-     for(var i = 0; i < bufs.length; i++){
-        bufs[i].copy(newbuf,offset, 0, bufs[i].length);
-        offset = offset + bufs[i].length;
-     }
-     return newbuf;
-  }else{
-     return Buffer.concat(bufs, tlen);
-  }
 }
 
