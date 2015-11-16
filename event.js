@@ -13,12 +13,29 @@ exports.newWriteBuffer = newWriteBuffer;
 
 exports.newEvent = newEvent;
 
+exports.setRC4Key = setRC4Key;
+
+exports.getRC4Key = getRC4Key;
+
+exports.rc4 = rc4;
+
 function newEvent(type, version, hash){
    var obj = new Object();
    obj.type = type;
    obj.version = version;
    obj.hash = hash;
    return obj;
+}
+
+var RC4Key= "";
+var isv06 = process.version.match('v0.6.*')
+
+function setRC4Key(key){
+   RC4Key = key;
+}
+
+function getRC4Key(){
+   return RC4Key;
 }
 
 function newReadBuffer(data){
@@ -36,13 +53,36 @@ function newWriteBuffer(data){
 }
 
 exports.encodeChunkTcpChunkEvent = function(ev){
-   var buffer = newWriteBuffer(new Buffer(ev.content.length + 24));
+   var buffer = newWriteBuffer(new Buffer(24));
    writeUvarint(buffer, ev.type);
    writeUvarint(buffer, ev.version);
    writeUvarint(buffer, ev.hash);
    writeUvarint(buffer, ev.seq);
-   writeBytes(buffer,ev.content);
-   var tmp = buffer.raw.slice(0, buffer.writeIdx);
+   writeUvarint(buffer, ev.content.length);
+   //writeBytes(buffer,ev.content);
+   //var tmp = buffer.raw.slice(0, buffer.writeIdx);
+   var header = buffer.raw.slice(0, buffer.writeIdx);
+   var len = header.length + ev.content.length;
+   var tmp = concatBuffers([header, ev.content],len);
+   return encodeEncryptChunk(tmp, ev.hash);
+}
+
+exports.encodeChunkResponseEvent = function(ev){
+   var buffer = newWriteBuffer(new Buffer(4096));
+   writeUvarint(buffer, ev.type);
+   writeUvarint(buffer, ev.version);
+   writeUvarint(buffer, ev.hash);
+   writeUvarint(buffer, ev.status);
+   writeUvarint(buffer, ev.headers.length);
+   for(var i = 0; i < ev.headers.length; i++){
+     var hv = ev.headers[i];
+     writeString(buffer, hv[0]);
+     writeString(buffer, hv[1]);
+   }
+    writeUvarint(buffer, ev.content.length);
+   var header = buffer.raw.slice(0, buffer.writeIdx);
+   var len = header.length + ev.content.length;
+   var tmp = concatBuffers([header, ev.content],len);
    return encodeEncryptChunk(tmp, ev.hash);
 }
 
@@ -63,21 +103,32 @@ function encodeEncryptChunk(data, hash){
   writeUvarint(buffer,ENCRYPT_EVENT_TYPE);
   writeUvarint(buffer,2);
   writeUvarint(buffer,hash);
-  writeUvarint(buffer,ENCRYPTER_SE1);
-  writeUvarint(buffer, data.length);
-  for(var i = 0; i < data.length; i++){
-    var k = data.readUInt8(i);
-    k -= 1;
-    if(k < 0) {
-      k += 256
-    }
-    buffer.raw.writeUInt8(k, buffer.writeIdx++);
+  if(RC4Key.length == 0){
+    writeUvarint(buffer,ENCRYPTER_SE1);
+  }else{
+    writeUvarint(buffer,ENCRYPTER_RC4);
   }
-  buffer.raw.writeInt32BE(buffer.writeIdx - 4, 0);
-  
-  var tmp =  buffer.raw.slice(0, buffer.writeIdx);
+  writeUvarint(buffer, data.length);
+  if(RC4Key.length == 0){
+    for(var i = 0; i < data.length; i++){
+       var k = data.readUInt8(i);
+       k -= 1;
+       if(k < 0) {
+         k += 256;
+       }
+       data.writeUInt8(k, i);
+       //buffer.raw.writeUInt8(k, buffer.writeIdx++);
+    }
+  }else{
+    rc4(RC4Key, data);
+    //data.copy(buffer.raw, buffer.writeIdx, 0, data.length);
+    //buffer.writeIdx += data.length;
+  }
+  buffer.raw.writeInt32BE(buffer.writeIdx - 4 + data.length, 0);
+  var header =  buffer.raw.slice(0, buffer.writeIdx);
+  var len = header.length + data.length;
   //console.log("#########chunk len is " + (buffer.writeIdx - 4) + ", buffer lenth=" + tmp.length);
-  return tmp;
+  return concatBuffers([header, data], len);
 }
 
 function writeUvarint(data, n) {
@@ -153,8 +204,31 @@ var TCP_CONN_CLOSED  = 2;
 
 var ENCRYPTER_NONE  = 0;
 var ENCRYPTER_SE1  = 1;
+var ENCRYPTER_RC4  = 2;
 
-
+function rc4(key, content) {
+  var s = [], j = 0, x;
+  for (var i = 0; i < 256; i++) {
+    s[i] = i;
+  }
+  for (i = 0; i < 256; i++) {
+    j = (j + s[i] + key.charCodeAt(i % key.length)) % 256;
+    x = s[i];
+    s[i] = s[j];
+    s[j] = x;
+  }
+  i = 0;
+  j = 0;
+  for (var y = 0; y < content.length; y++) {
+    i = (i + 1) % 256;
+    j = (j + s[i]) % 256;
+    x = s[i];
+    s[i] = s[j];
+    s[j] = x;
+    var tmp = content.readUInt8(y) ^ s[(s[i] + s[j]) % 256];
+    content.writeUInt8(tmp, y);
+  }
+}
 
 
 function decodeRawEvent(type, version, data){
@@ -190,6 +264,10 @@ function decodeRawEvent(type, version, data){
           decrytContent.writeUInt8(k,i);
        }
        return decodeEvent(newReadBuffer(decrytContent));
+     }else if(encType == ENCRYPTER_RC4){
+       var decrytContent = readBytes(data);
+       rc4(RC4Key, decrytContent);
+       return decodeEvent(newReadBuffer(decrytContent));
      }else if(encType == ENCRYPTER_NONE){
         readUvarint(data);
         return decodeEvent(data);
@@ -200,12 +278,18 @@ function decodeRawEvent(type, version, data){
      ev.method = readString(data);
      var headlen =  readUvarint(data);
      ev.headers = [];
+     ev.hashce = false;
+     ev.rangeheader = null;
      var headerstr = ev.method + " " + ev.url + " HTTP/1.1\r\n";
      for(var i = 0; i < headlen; i++){
           var name = readString(data);
           var value = readString(data);
           if(name.toLowerCase() == "host"){
-            ev.host = value
+            ev.host = value;
+          }else if(name.toLowerCase() == "x-snova-hce"){
+            ev.hashce = true;
+          }else if(name.toLowerCase() == "range"){
+             ev.rangeheader = value;
           }
           ev.headers.push([name, value]);
           headerstr = headerstr + name + ":" + value + "\r\n";
@@ -225,6 +309,8 @@ function decodeRawEvent(type, version, data){
    return ev;
 }
 
+exports.decodeEvent = decodeEvent;
+
 function decodeEvent(data){
   var type = readUvarint(data);
   var version = readUvarint(data);
@@ -243,5 +329,25 @@ exports.decodeEvents = function(data){
      evs.push(ev);
   }
   return evs;
+}
+
+exports.concatBuffers = concatBuffers;
+
+function concatBuffers(bufs, tlen){
+  if(isv06 != null){
+     var alllen = 0;
+     for(var i = 0; i < bufs.length; i++){
+        alllen = alllen + bufs[i].length;
+     }
+     var newbuf = new Buffer(alllen);
+     var offset = 0;
+     for(var i = 0; i < bufs.length; i++){
+        bufs[i].copy(newbuf,offset, 0, bufs[i].length);
+        offset = offset + bufs[i].length;
+     }
+     return newbuf;
+  }else{
+     return Buffer.concat(bufs, tlen);
+  }
 }
 

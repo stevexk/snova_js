@@ -1,34 +1,34 @@
 /**
  * HashMap
  * @author Ariel Flesler <aflesler@gmail.com>
- * @version 0.9.1
- * Date: 9/28/2012
+ * @version 0.9.2
+ * Date: 12/9/2012
  * Homepage: https://github.com/flesler/hashmap
  */
 
 ;(function(exports){
-	
+
 	function HashMap() {
 		this.clear();
 	};
 
 	HashMap.prototype = {
 		constructor:HashMap,
-		
-		// TODO: Implement a way to iterate (.each()?)
 
 		get:function(key) {
-			return this._data[this.hash(key)];
+			var data = this._data[this.hash(key)];
+			return data && data[1];
 		},
-		
+
 		set:function(key, value) {
-			this._data[this.hash(key)] = value;
+			// Store original key as well (for iteration)
+			this._data[this.hash(key)] = [key, value];
 		},
-		
+
 		has:function(key) {
 			return this.hash(key) in this._data;
 		},
-		
+
 		remove:function(key) {
 			delete this._data[this.hash(key)];
 		},
@@ -87,12 +87,19 @@
 
 					return '{' + key._hmuid_;
 			}
-		}
+		},
+
+		forEach:function(func) {
+			for (var key in this._data) {
+				var data = this._data[key];
+				func(data[1], data[0]);
+			}
+		},
 	};
 
 	HashMap.uid = 0;
 
-	
+
 	function hide(obj, prop) {
 		// Make non iterable if supported
 		if (Object.defineProperty) {
